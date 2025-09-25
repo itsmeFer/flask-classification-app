@@ -1,11 +1,3 @@
-"""
-Aplikasi Flask untuk Klasifikasi dengan RandomForest
-- Login admin
-- Upload dataset (CSV / Excel)
-- Pilih kolom target
-- Training RandomForest + tampilkan hasil
-"""
-
 from flask import Flask, request, redirect, url_for, session, render_template_string, flash
 import pandas as pd
 import io

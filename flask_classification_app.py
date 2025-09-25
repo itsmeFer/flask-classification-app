@@ -1,298 +1,252 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "7071ac34-f627-456e-9423-e345343f0084",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "\"\"\"\n",
-    "Single-file Flask app: Login -> Upload/select dataset -> Choose target column -> Run RandomForest pipeline -> Show results\n",
-    "How to run:\n",
-    "1. pip install flask pandas scikit-learn matplotlib\n",
-    "2. python flask_classification_app.py\n",
-    "3. Open http://127.0.0.1:5000\n",
-    "\n",
-    "Default admin credentials: username: admin  password: password123\n",
-    "\n",
-    "This file uses render_template_string so it is self-contained (no external template files required).\n",
-    "\"\"\"\n",
-    "from flask import Flask, request, redirect, url_for, session, render_template_string, flash\n",
-    "import pandas as pd\n",
-    "import io\n",
-    "from sklearn.model_selection import train_test_split\n",
-    "from sklearn.preprocessing import StandardScaler\n",
-    "from sklearn.ensemble import RandomForestClassifier\n",
-    "from sklearn.metrics import accuracy_score, classification_report, confusion_matrix\n",
-    "import traceback\n",
-    "\n",
-    "app = Flask(__name__)\n",
-    "app.secret_key = \"replace_this_with_a_secure_random_key\"\n",
-    "\n",
-    "# Hardcoded admin credentials (change in production)\n",
-    "ADMIN_USER = \"admin\"\n",
-    "ADMIN_PASS = \"password123\"\n",
-    "\n",
-    "# HTML templates (render_template_string) -------------------------------------------------\n",
-    "LOGIN_HTML = '''\n",
-    "<!doctype html>\n",
-    "<title>Login</title>\n",
-    "<h2>Login - Admin</h2>\n",
-    "{% with messages = get_flashed_messages() %}\n",
-    "  {% if messages %}\n",
-    "    <ul style=\"color: red;\">{% for m in messages %}<li>{{m}}</li>{% endfor %}</ul>\n",
-    "  {% endif %}\n",
-    "{% endwith %}\n",
-    "<form action=\"{{ url_for('login') }}\" method=\"post\">\n",
-    "  <label>Username: <input name=\"username\"></label><br>\n",
-    "  <label>Password: <input name=\"password\" type=\"password\"></label><br>\n",
-    "  <button type=\"submit\">Login</button>\n",
-    "</form>\n",
-    "<p>Or <a href=\"{{ url_for('dashboard') }}?sample=1\">continue with sample dataset (Breast Cancer)</a></p>\n",
-    "'''\n",
-    "\n",
-    "DASHBOARD_HTML = '''\n",
-    "<!doctype html>\n",
-    "<title>Dashboard</title>\n",
-    "<h2>Dashboard</h2>\n",
-    "<p>Logged in as <strong>{{ session.get('user') }}</strong> - <a href=\"{{ url_for('logout') }}\">Logout</a></p>\n",
-    "\n",
-    "<h3>1) Upload CSV dataset (or use sample)</h3>\n",
-    "<form method=\"post\" action=\"{{ url_for('upload') }}\" enctype=\"multipart/form-data\">\n",
-    "  <input type=\"file\" name=\"file\" accept=\".csv\">\n",
-    "  <button type=\"submit\">Upload CSV</button>\n",
-    "</form>\n",
-    "\n",
-    "<hr>\n",
-    "\n",
-    "{% if df is not none %}\n",
-    "  <h3>Dataset preview (first 5 rows)</h3>\n",
-    "  {{ df.head().to_html(classes='data', header=True, index=False) | safe }}\n",
-    "  <h4>Columns detected:</h4>\n",
-    "  <form method=\"post\" action=\"{{ url_for('process') }}\">\n",
-    "    <label for=\"target\">Select target column (label):</label>\n",
-    "    <select name=\"target\">\n",
-    "      {% for c in columns %}\n",
-    "        <option value=\"{{c}}\">{{c}}</option>\n",
-    "      {% endfor %}\n",
-    "    </select>\n",
-    "    <p>\n",
-    "      <label><input type=\"checkbox\" name=\"use_all_features\" value=\"1\" checked> Use all other columns as features (non-target)</label>\n",
-    "    </p>\n",
-    "    <p>\n",
-    "      <label>Test size (0-0.9): <input name=\"test_size\" value=\"0.2\"></label>\n",
-    "    </p>\n",
-    "    <p>\n",
-    "      <label>Random state: <input name=\"random_state\" value=\"42\"></label>\n",
-    "    </p>\n",
-    "    <button type=\"submit\">Run Model</button>\n",
-    "  </form>\n",
-    "{% else %}\n",
-    "  <p>No dataset loaded. You can upload a CSV or <a href=\"{{ url_for('dashboard') }}?sample=1\">use sample dataset</a>.</p>\n",
-    "{% endif %}\n",
-    "\n",
-    "{% if result %}\n",
-    "  <hr>\n",
-    "  <h3>Results</h3>\n",
-    "  <p><strong>Accuracy:</strong> {{ result['accuracy']*100 | round(2) }}%</p>\n",
-    "  <h4>Classification Report</h4>\n",
-    "  <pre>{{ result['report'] }}</pre>\n",
-    "  <h4>Confusion Matrix</h4>\n",
-    "  <pre>{{ result['confusion'] }}</pre>\n",
-    "{% endif %}\n",
-    "\n",
-    "<hr>\n",
-    "<p><small>Note: This is a demo. For production, secure sessions and passwords properly.</small></p>\n",
-    "'''\n",
-    "\n",
-    "# Utility functions ---------------------------------------------------------------------\n",
-    "\n",
-    "def load_sample_dataframe():\n",
-    "    from sklearn.datasets import load_breast_cancer\n",
-    "    data = load_breast_cancer()\n",
-    "    X = pd.DataFrame(data.data, columns=data.feature_names)\n",
-    "    y = pd.Series(data.target, name='target')\n",
-    "    df = pd.concat([X, y], axis=1)\n",
-    "    return df\n",
-    "\n",
-    "# Routes --------------------------------------------------------------------------------\n",
-    "\n",
-    "@app.route('/', methods=['GET'])\n",
-    "def index():\n",
-    "    if session.get('logged_in'):\n",
-    "        return redirect(url_for('dashboard'))\n",
-    "    return render_template_string(LOGIN_HTML)\n",
-    "\n",
-    "@app.route('/login', methods=['POST'])\n",
-    "def login():\n",
-    "    username = request.form.get('username', '')\n",
-    "    password = request.form.get('password', '')\n",
-    "    if username == ADMIN_USER and password == ADMIN_PASS:\n",
-    "        session['logged_in'] = True\n",
-    "        session['user'] = username\n",
-    "        # clear any stored df\n",
-    "        session.pop('csv_bytes', None)\n",
-    "        return redirect(url_for('dashboard'))\n",
-    "    else:\n",
-    "        flash('Invalid credentials')\n",
-    "        return redirect(url_for('index'))\n",
-    "\n",
-    "@app.route('/logout')\n",
-    "def logout():\n",
-    "    session.clear()\n",
-    "    return redirect(url_for('index'))\n",
-    "\n",
-    "@app.route('/dashboard', methods=['GET'])\n",
-    "def dashboard():\n",
-    "    if not session.get('logged_in'):\n",
-    "        # allow sample view even without login if ?sample=1\n",
-    "        if request.args.get('sample') == '1':\n",
-    "            df = load_sample_dataframe()\n",
-    "            session['csv_bytes'] = df.to_csv(index=False).encode('utf-8')\n",
-    "            session['csv_name'] = 'sample_breast_cancer'\n",
-    "            columns = list(df.columns)\n",
-    "            return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)\n",
-    "        return redirect(url_for('index'))\n",
-    "\n",
-    "    csv_bytes = session.get('csv_bytes')\n",
-    "    if csv_bytes:\n",
-    "        try:\n",
-    "            df = pd.read_csv(io.BytesIO(csv_bytes))\n",
-    "        except Exception as e:\n",
-    "            df = None\n",
-    "            flash(f'Error reading stored dataset: {e}')\n",
-    "    else:\n",
-    "        # if user clicked ?sample=1 while logged in\n",
-    "        if request.args.get('sample') == '1':\n",
-    "            df = load_sample_dataframe()\n",
-    "            session['csv_bytes'] = df.to_csv(index=False).encode('utf-8')\n",
-    "            session['csv_name'] = 'sample_breast_cancer'\n",
-    "        else:\n",
-    "            df = None\n",
-    "\n",
-    "    columns = list(df.columns) if df is not None else []\n",
-    "    return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)\n",
-    "\n",
-    "@app.route('/upload', methods=['POST'])\n",
-    "def upload():\n",
-    "    if not session.get('logged_in'):\n",
-    "        return redirect(url_for('index'))\n",
-    "    f = request.files.get('file')\n",
-    "    if not f:\n",
-    "        flash('No file uploaded')\n",
-    "        return redirect(url_for('dashboard'))\n",
-    "    try:\n",
-    "        content = f.read()\n",
-    "        # Test read into pandas\n",
-    "        df = pd.read_csv(io.BytesIO(content))\n",
-    "        session['csv_bytes'] = content\n",
-    "        session['csv_name'] = f.filename\n",
-    "        flash(f'Uploaded {f.filename} successfully')\n",
-    "    except Exception as e:\n",
-    "        flash(f'Error reading CSV: {e}')\n",
-    "    return redirect(url_for('dashboard'))\n",
-    "\n",
-    "@app.route('/process', methods=['POST'])\n",
-    "def process():\n",
-    "    if not session.get('logged_in'):\n",
-    "        return redirect(url_for('index'))\n",
-    "\n",
-    "    csv_bytes = session.get('csv_bytes')\n",
-    "    if not csv_bytes:\n",
-    "        flash('No dataset loaded. Upload a CSV or use sample.')\n",
-    "        return redirect(url_for('dashboard'))\n",
-    "\n",
-    "    try:\n",
-    "        df = pd.read_csv(io.BytesIO(csv_bytes))\n",
-    "        target = request.form.get('target')\n",
-    "        test_size = float(request.form.get('test_size', 0.2))\n",
-    "        random_state = int(request.form.get('random_state', 42))\n",
-    "\n",
-    "        if target not in df.columns:\n",
-    "            flash('Selected target column not in dataset')\n",
-    "            return redirect(url_for('dashboard'))\n",
-    "\n",
-    "        # Prepare X and y\n",
-    "        y = df[target]\n",
-    "        X = df.drop(columns=[target])\n",
-    "\n",
-    "        # Basic handling of missing values: fill numeric with median, categorical with mode\n",
-    "        for col in X.columns:\n",
-    "            if X[col].dtype.kind in 'biufc':\n",
-    "                X[col] = X[col].fillna(X[col].median())\n",
-    "            else:\n",
-    "                X[col] = X[col].fillna(X[col].mode().iloc[0] if not X[col].mode().empty else 'missing')\n",
-    "\n",
-    "        # For simplicity, try to convert categorical to numeric via get_dummies\n",
-    "        X = pd.get_dummies(X, drop_first=True)\n",
-    "\n",
-    "        # Drop columns with no variance or all-NaN\n",
-    "        X = X.loc[:, X.apply(pd.Series.nunique) > 1]\n",
-    "\n",
-    "        # If target is not numeric, try to encode\n",
-    "        if y.dtype.kind not in 'biufc':\n",
-    "            y = pd.factorize(y)[0]\n",
-    "\n",
-    "        # Train/test split\n",
-    "        X_train, X_test, y_train, y_test = train_test_split(\n",
-    "            X, y, test_size=test_size, random_state=random_state, stratify=y if len(set(y))>1 else None\n",
-    "        )\n",
-    "\n",
-    "        # Scale\n",
-    "        scaler = StandardScaler()\n",
-    "        X_train_scaled = scaler.fit_transform(X_train)\n",
-    "        X_test_scaled = scaler.transform(X_test)\n",
-    "\n",
-    "        # Model\n",
-    "        model = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=random_state)\n",
-    "        model.fit(X_train_scaled, y_train)\n",
-    "\n",
-    "        y_pred = model.predict(X_test_scaled)\n",
-    "        acc = accuracy_score(y_test, y_pred)\n",
-    "        report = classification_report(y_test, y_pred)\n",
-    "        cm = confusion_matrix(y_test, y_pred)\n",
-    "\n",
-    "        result = {\n",
-    "            'accuracy': acc,\n",
-    "            'report': report,\n",
-    "            'confusion': cm.tolist()\n",
-    "        }\n",
-    "\n",
-    "        columns = list(df.columns)\n",
-    "        return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=result)\n",
-    "\n",
-    "    except Exception as e:\n",
-    "        tb = traceback.format_exc()\n",
-    "        flash(f'Error during processing: {e}')\n",
-    "        print(tb)\n",
-    "        return redirect(url_for('dashboard'))\n",
-    "\n",
-    "# Run ----------------------------------------------------------------------------------\n",
-    "if __name__ == '__main__':\n",
-    "    app.run(debug=True)\n"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python 3 (ipykernel)",
-   "language": "python",
-   "name": "python3"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.9.9"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+"""
+Aplikasi Flask untuk Klasifikasi dengan RandomForest
+- Login admin
+- Upload dataset (CSV / Excel)
+- Pilih kolom target
+- Training RandomForest + tampilkan hasil
+"""
+
+from flask import Flask, request, redirect, url_for, session, render_template_string, flash
+import pandas as pd
+import io
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import traceback
+
+app = Flask(__name__)
+app.secret_key = "replace_this_with_a_secure_random_key"
+
+# Hardcoded admin credentials
+ADMIN_USER = "admin"
+ADMIN_PASS = "password123"
+
+# ------------------------------------------------------------------
+# HTML Templates
+# ------------------------------------------------------------------
+
+LOGIN_HTML = '''
+<!doctype html>
+<title>Login</title>
+<h2>Login - Admin</h2>
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <ul style="color: red;">{% for m in messages %}<li>{{m}}</li>{% endfor %}</ul>
+  {% endif %}
+{% endwith %}
+<form action="{{ url_for('login') }}" method="post">
+  <label>Username: <input name="username"></label><br>
+  <label>Password: <input name="password" type="password"></label><br>
+  <button type="submit">Login</button>
+</form>
+<p>Or <a href="{{ url_for('dashboard') }}?sample=1">use sample dataset (Breast Cancer)</a></p>
+'''
+
+DASHBOARD_HTML = '''
+<!doctype html>
+<title>Dashboard</title>
+<h2>Dashboard</h2>
+<p>Logged in as <strong>{{ session.get('user') }}</strong> - <a href="{{ url_for('logout') }}">Logout</a></p>
+
+<h3>1) Upload dataset (CSV or Excel)</h3>
+<form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+  <input type="file" name="file" accept=".csv,.xls,.xlsx">
+  <button type="submit">Upload</button>
+</form>
+
+<hr>
+
+{% if df is not none %}
+  <h3>Dataset preview (first 5 rows)</h3>
+  {{ df.head().to_html(classes='data', header=True, index=False) | safe }}
+  <h4>Columns detected:</h4>
+  <form method="post" action="{{ url_for('process') }}">
+    <label for="target">Select target column:</label>
+    <select name="target">
+      {% for c in columns %}
+        <option value="{{c}}">{{c}}</option>
+      {% endfor %}
+    </select>
+    <p>
+      <label>Test size (0-0.9): <input name="test_size" value="0.2"></label>
+    </p>
+    <p>
+      <label>Random state: <input name="random_state" value="42"></label>
+    </p>
+    <button type="submit">Run Model</button>
+  </form>
+{% else %}
+  <p>No dataset loaded. You can upload a file or <a href="{{ url_for('dashboard') }}?sample=1">use sample dataset</a>.</p>
+{% endif %}
+
+{% if result %}
+  <hr>
+  <h3>Results</h3>
+  <p><strong>Accuracy:</strong> {{ result['accuracy']*100 | round(2) }}%</p>
+  <h4>Classification Report</h4>
+  <pre>{{ result['report'] }}</pre>
+  <h4>Confusion Matrix</h4>
+  <pre>{{ result['confusion'] }}</pre>
+{% endif %}
+'''
+
+# ------------------------------------------------------------------
+# Helper
+# ------------------------------------------------------------------
+
+def load_sample_dataframe():
+    from sklearn.datasets import load_breast_cancer
+    data = load_breast_cancer()
+    X = pd.DataFrame(data.data, columns=data.feature_names)
+    y = pd.Series(data.target, name='target')
+    return pd.concat([X, y], axis=1)
+
+def read_file(content, filename):
+    """Auto-detect file type: CSV (comma/semicolon/tab) or Excel"""
+    if filename.endswith(".csv"):
+        return pd.read_csv(io.BytesIO(content), sep=None, engine="python"), "csv"
+    elif filename.endswith((".xls", ".xlsx")):
+        return pd.read_excel(io.BytesIO(content)), "excel"
+    else:
+        raise ValueError("Unsupported file type. Please upload CSV or Excel.")
+
+# ------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------
+
+@app.route('/')
+def index():
+    if session.get('logged_in'):
+        return redirect(url_for('dashboard'))
+    return render_template_string(LOGIN_HTML)
+
+@app.route('/login', methods=['POST'])
+def login():
+    if request.form.get('username') == ADMIN_USER and request.form.get('password') == ADMIN_PASS:
+        session['logged_in'] = True
+        session['user'] = ADMIN_USER
+        session.pop('csv_bytes', None)
+        return redirect(url_for('dashboard'))
+    flash("Invalid credentials")
+    return redirect(url_for('index'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('logged_in'):
+        if request.args.get("sample") == "1":
+            df = load_sample_dataframe()
+            session['csv_bytes'] = df.to_csv(index=False).encode("utf-8")
+            session['filetype'] = "csv"
+            columns = list(df.columns)
+            return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)
+        return redirect(url_for("index"))
+
+    df = None
+    csv_bytes = session.get("csv_bytes")
+    if csv_bytes:
+        try:
+            if session.get("filetype") == "excel":
+                df = pd.read_excel(io.BytesIO(csv_bytes))
+            else:
+                df = pd.read_csv(io.BytesIO(csv_bytes), sep=None, engine="python")
+        except Exception as e:
+            flash(f"Error reading dataset: {e}")
+    columns = list(df.columns) if df is not None else []
+    return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    f = request.files.get("file")
+    if not f:
+        flash("No file uploaded")
+        return redirect(url_for("dashboard"))
+    try:
+        content = f.read()
+        df, ftype = read_file(content, f.filename.lower())
+        session['csv_bytes'] = content
+        session['filetype'] = ftype
+        flash(f"Uploaded {f.filename} successfully")
+    except Exception as e:
+        flash(f"Error reading file: {e}")
+    return redirect(url_for("dashboard"))
+
+@app.route('/process', methods=['POST'])
+def process():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    csv_bytes = session.get("csv_bytes")
+    if not csv_bytes:
+        flash("No dataset loaded.")
+        return redirect(url_for("dashboard"))
+    try:
+        # reload dataframe
+        if session.get("filetype") == "excel":
+            df = pd.read_excel(io.BytesIO(csv_bytes))
+        else:
+            df = pd.read_csv(io.BytesIO(csv_bytes), sep=None, engine="python")
+
+        target = request.form.get("target")
+        test_size = float(request.form.get("test_size", 0.2))
+        random_state = int(request.form.get("random_state", 42))
+
+        if target not in df.columns:
+            flash("Target column not found")
+            return redirect(url_for("dashboard"))
+
+        y = df[target]
+        X = df.drop(columns=[target])
+
+        # Fill missing values
+        for col in X.columns:
+            if X[col].dtype.kind in "biufc":
+                X[col] = X[col].fillna(X[col].median())
+            else:
+                X[col] = X[col].fillna(X[col].mode().iloc[0] if not X[col].mode().empty else "missing")
+
+        # One-hot encode categoricals
+        X = pd.get_dummies(X, drop_first=True)
+        X = X.loc[:, X.apply(pd.Series.nunique) > 1]
+
+        if y.dtype.kind not in "biufc":
+            y = pd.factorize(y)[0]
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, stratify=y if len(set(y)) > 1 else None
+        )
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        model = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=random_state)
+        model.fit(X_train_scaled, y_train)
+
+        y_pred = model.predict(X_test_scaled)
+
+        result = {
+            "accuracy": accuracy_score(y_test, y_pred),
+            "report": classification_report(y_test, y_pred),
+            "confusion": confusion_matrix(y_test, y_pred).tolist()
+        }
+
+        columns = list(df.columns)
+        return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=result)
+    except Exception as e:
+        tb = traceback.format_exc()
+        flash(f"Error: {e}")
+        print(tb)
+        return redirect(url_for("dashboard"))
+
+# ------------------------------------------------------------------
+# Run (Replit will expose via web)
+# ------------------------------------------------------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=True)

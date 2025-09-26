@@ -1,17 +1,6 @@
 """
-Flask Classification/Regression App - Random Forest
-Fitur:
-- Login admin
-- Upload dataset CSV (bisa "," atau ";" sebagai pemisah)
-- Pilih kolom target
-- Training RandomForest (Classifier atau Regressor otomatis)
-- Tampilkan hasil akurasi / R2 / MAE / MSE, classification report, confusion matrix
-
-Cara menjalankan:
-1. pip install flask pandas scikit-learn
-2. python app.py
-3. Buka http://127.0.0.1:5000
-Login: admin / password123
+Flask Classification/Regression App - Random Forest (Elegant UI)
+Fitur tetap sama, tapi menggunakan Bootstrap untuk tampilan elegan.
 """
 
 import os
@@ -34,78 +23,152 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ADMIN_USER = "admin"
 ADMIN_PASS = "password123"
 
-# ================= HTML Template =================
+# ================= HTML Template with Bootstrap =================
 LOGIN_HTML = '''
 <!doctype html>
-<title>Login</title>
-<h2>Login - Admin</h2>
-{% with messages = get_flashed_messages() %}
-  {% if messages %}
-    <ul style="color: red;">{% for m in messages %}<li>{{m}}</li>{% endfor %}</ul>
-  {% endif %}
-{% endwith %}
-<form action="{{ url_for('login') }}" method="post">
-  <label>Username: <input name="username"></label><br>
-  <label>Password: <input name="password" type="password"></label><br>
-  <button type="submit">Login</button>
-</form>
-<p>Or <a href="{{ url_for('dashboard') }}?sample=1">continue with sample dataset (Breast Cancer)</a></p>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login - Admin</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<div class="container py-5">
+  <div class="row justify-content-center">
+    <div class="col-md-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h3 class="card-title text-center mb-4">Login Admin</h3>
+          {% with messages = get_flashed_messages() %}
+            {% if messages %}
+              <div class="alert alert-danger">
+                {% for m in messages %}{{m}}<br>{% endfor %}
+              </div>
+            {% endif %}
+          {% endwith %}
+          <form action="{{ url_for('login') }}" method="post">
+            <div class="mb-3">
+              <label class="form-label">Username</label>
+              <input class="form-control" name="username" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Password</label>
+              <input class="form-control" name="password" type="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Login</button>
+          </form>
+          <p class="mt-3 text-center">Or <a href="{{ url_for('dashboard') }}?sample=1">use sample dataset</a></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
 '''
 
 DASHBOARD_HTML = '''
 <!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dashboard</title>
-<h2>Dashboard</h2>
-<p>Logged in as <strong>{{ session.get('user') }}</strong> - <a href="{{ url_for('logout') }}">Logout</a></p>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+.dataframe { width: 100%; }
+pre { background: #f8f9fa; padding: 10px; border-radius: 5px; }
+</style>
+</head>
+<body class="bg-light">
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+  <div class="container">
+    <a class="navbar-brand" href="#">RandomForest App</a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item"><span class="nav-link text-white">Logged in as {{ session.get('user') }}</span></li>
+        <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('logout') }}">Logout</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
 
-<h3>1) Upload CSV dataset (or use sample)</h3>
-<form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
-  <input type="file" name="file" accept=".csv">
-  <button type="submit">Upload CSV</button>
-</form>
-<hr>
+<div class="container">
 
-{% if df is not none %}
-  <h3>Dataset preview (first 5 rows)</h3>
-  {{ df.head().to_html(classes='data', header=True, index=False) | safe }}
-  <h4>Columns detected:</h4>
-  <form method="post" action="{{ url_for('process') }}">
-    <label for="target">Select target column (label):</label>
-    <select name="target">
-      {% for c in columns %}
-        <option value="{{c}}">{{c}}</option>
-      {% endfor %}
-    </select>
-    <p>
-      <label>Test size (0-0.9): <input name="test_size" value="0.2"></label>
-    </p>
-    <p>
-      <label>Random state: <input name="random_state" value="42"></label>
-    </p>
-    <button type="submit">Run Model</button>
-  </form>
-{% else %}
-  <p>No dataset loaded. You can upload a CSV or <a href="{{ url_for('dashboard') }}?sample=1">use sample dataset</a>.</p>
-{% endif %}
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="alert alert-warning">
+        {% for m in messages %}{{m}}<br>{% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
 
-{% if result %}
-  <hr>
-  <h3>Results</h3>
-  {% if result.type == 'classification' %}
-    <p><strong>Accuracy:</strong> {{ result['accuracy']*100 | round(2) }}%</p>
-    <h4>Classification Report</h4>
-    <pre>{{ result['report'] }}</pre>
-    <h4>Confusion Matrix</h4>
-    <pre>{{ result['confusion'] }}</pre>
-  {% else %}
-    <p><strong>R2 Score:</strong> {{ result['r2'] | round(4) }}</p>
-    <p><strong>MAE:</strong> {{ result['mae'] | round(4) }}</p>
-    <p><strong>MSE:</strong> {{ result['mse'] | round(4) }}</p>
+  <div class="card mb-4 shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title">1) Upload CSV dataset (or use sample)</h5>
+      <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="d-flex gap-2">
+        <input type="file" name="file" accept=".csv" class="form-control">
+        <button type="submit" class="btn btn-success">Upload CSV</button>
+      </form>
+    </div>
+  </div>
+
+  {% if df is not none %}
+    <div class="card mb-4 shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Dataset preview (first 5 rows)</h5>
+        {{ df.head().to_html(classes='table table-striped table-bordered', header=True, index=False) | safe }}
+
+        <h5 class="mt-3">Columns detected</h5>
+        <form method="post" action="{{ url_for('process') }}">
+          <div class="row mb-3">
+            <div class="col-md-4">
+              <label class="form-label">Target column</label>
+              <select name="target" class="form-select">
+                {% for c in columns %}
+                  <option value="{{c}}">{{c}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Test size</label>
+              <input name="test_size" value="0.2" class="form-control">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Random state</label>
+              <input name="random_state" value="42" class="form-control">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Run Model</button>
+        </form>
+      </div>
+    </div>
   {% endif %}
-{% endif %}
 
-<hr>
-<p><small>Note: Demo only. In production, secure sessions and passwords properly.</small></p>
+  {% if result %}
+    <div class="card mb-4 shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Results</h5>
+        {% if result.type == 'classification' %}
+          <p><strong>Accuracy:</strong> {{ result['accuracy']*100 | round(2) }}%</p>
+          <h6>Classification Report</h6>
+          <pre>{{ result['report'] }}</pre>
+          <h6>Confusion Matrix</h6>
+          <pre>{{ result['confusion'] }}</pre>
+        {% else %}
+          <p><strong>R2 Score:</strong> {{ result['r2'] | round(4) }}</p>
+          <p><strong>MAE:</strong> {{ result['mae'] | round(4) }}</p>
+          <p><strong>MSE:</strong> {{ result['mse'] | round(4) }}</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  <p class="text-center text-muted"><small>Note: Demo only. In production, secure sessions and passwords properly.</small></p>
+</div>
+</body>
+</html>
 '''
 
 # ================= Utils =================
@@ -118,7 +181,6 @@ def load_sample_dataframe():
     return df
 
 def read_csv_flexible(filepath):
-    """Baca CSV dengan fleksibel: deteksi ',' atau ';' sebagai separator."""
     with open(filepath, 'r', encoding='utf-8') as f:
         first_line = f.readline()
     sep = ';' if ';' in first_line else ','
@@ -158,7 +220,6 @@ def dashboard():
             columns = list(df.columns)
             return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)
         return redirect(url_for('index'))
-
     csv_file = session.get('csv_file')
     if csv_file and os.path.exists(csv_file):
         try:
@@ -168,7 +229,6 @@ def dashboard():
             flash(f'Error reading stored dataset: {e}')
     else:
         df = None
-
     columns = list(df.columns) if df is not None else []
     return render_template_string(DASHBOARD_HTML, df=df, columns=columns, result=None)
 
@@ -193,7 +253,6 @@ def upload():
 def process():
     if not session.get('logged_in'):
         return redirect(url_for('index'))
-
     csv_file = session.get('csv_file')
     if csv_file and os.path.exists(csv_file):
         df = read_csv_flexible(csv_file)
@@ -213,75 +272,51 @@ def process():
         y = df[target]
         X = df.drop(columns=[target])
 
-        # Handle missing values
         for col in X.columns:
             if X[col].dtype.kind in 'biufc':
                 X[col] = X[col].fillna(X[col].median())
             else:
                 X[col] = X[col].fillna(X[col].mode().iloc[0] if not X[col].mode().empty else 'missing')
 
-        # Encode categorical
         cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
         if cat_cols:
             X = pd.get_dummies(X, columns=cat_cols, drop_first=True)
-
-        # Hapus kolom yang hanya punya 1 nilai unik
         X = X.loc[:, X.apply(pd.Series.nunique) > 1]
-
         if X.shape[1] == 0:
             flash('Error: After preprocessing, no features left for training.')
             return redirect(url_for('dashboard'))
 
-        # Tentukan tipe: classification atau regression
         is_classification = y.dtype.kind not in 'fc'
-
         if is_classification:
-            # Encode target jika kategori
             if y.dtype.kind not in 'biufc':
                 y = pd.factorize(y)[0]
-
-            # Stratify hanya jika semua kelas punya >=2 sampel
             class_counts = pd.Series(y).value_counts()
             stratify_param = y if class_counts.min() >= 2 else None
-
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=test_size, random_state=random_state,
                 stratify=stratify_param
             )
-
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
-
             model = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=random_state)
             model.fit(X_train_scaled, y_train)
             y_pred = model.predict(X_test_scaled)
-
-            acc = accuracy_score(y_test, y_pred)
-            report = classification_report(y_test, y_pred, zero_division=0)
-            cm = confusion_matrix(y_test, y_pred)
-
             result = {
                 'type': 'classification',
-                'accuracy': acc,
-                'report': report,
-                'confusion': cm.tolist()
+                'accuracy': accuracy_score(y_test, y_pred),
+                'report': classification_report(y_test, y_pred, zero_division=0),
+                'confusion': confusion_matrix(y_test, y_pred).tolist()
             }
         else:
-            # Regression
             y = pd.to_numeric(y, errors='coerce')
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=random_state
-            )
-
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
-
             model = RandomForestRegressor(n_estimators=200, max_depth=8, random_state=random_state)
             model.fit(X_train_scaled, y_train)
             y_pred = model.predict(X_test_scaled)
-
             result = {
                 'type': 'regression',
                 'r2': r2_score(y_test, y_pred),
@@ -300,7 +335,5 @@ def process():
 
 # ================= Run =================
 if __name__ == '__main__':
-    # app.run(debug=True)
-    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
